@@ -75,9 +75,11 @@ def main():
 
     # Sidebar examples and footer
     st.sidebar.header("🔍 Examples")
-    st.sidebar.markdown("- Design a marketing poster")
-    st.sidebar.markdown("- Generate presentation content")
-    st.sidebar.markdown("- Write a blog header image prompt")
+    st.sidebar.markdown("- Gamma: Modern sales deck with key metrics and customer testimonials")
+    st.sidebar.markdown("- Gamma: Educational presentation on renewable energy trends")
+    st.sidebar.markdown("- Canva: Instagram story announcing a product launch")
+    st.sidebar.markdown("- Canva: Facebook post graphic for a holiday sale")
+    st.sidebar.markdown("- Canva: Event flyer for a local charity run")
     st.sidebar.markdown("---")
     st.sidebar.markdown("👨‍💻 Made with ❤️ by [Parth Shinge](https://github.com/parth-shinge)")
 

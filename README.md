@@ -17,37 +17,28 @@
 
 ## 💻 How to Run This Locally
 
-1. **Clone the Repository**
-bash
+1. **Clone the Repository**:
 git clone https://github.com/YOUR_USERNAME/prompt-gen.git
 cd prompt-gen
 
-2. **(Optional) Create Virtual Environment** 
-bash
+2. **(Optional) Create Virtual Environment** :
 python -m venv venv
 venv\Scripts\activate  # for Windows
 
-3. **Install Dependencies**
-bash
+3. **Install Dependencies**:
 pip install streamlit requests
 
 4. **Add your API Key
-Edit the line in prompt_generator.py:**
-python
+Edit the line in prompt_generator.py:**:
 GEMINI_API_KEY = "your-api-key-here"
 
-5. **Run the App**
-bash
+5. **Run the App**:
 streamlit run prompt_generator.py
 
 🧠 Future Plans
-Add support for more tools (Beautify, Presentations, etc.)
-
-Integrate offline AI model (custom LLM)
-
-Support image-based prompt previews
-
-Deploy to cloud (once out of private)
+1. Add support for more tools (Beautify, Presentations, etc.)
+2. Integrate offline AI model (custom LLM)
+3. Support image-based prompt previews
 
 ⚠️ This repository is private and meant for MVP testing only. Do not share or expose your API key.
 

@@ -2,7 +2,7 @@ import streamlit as st
 import requests
 
 # ==== API KEY ====
-GEMINI_API_KEY = "AIzaSyDteFt00AbubJqENDbALTCX3vMAzn7vPm0"  # your AI Studio key
+GEMINI_API_KEY = st.secrets["GEMINI_API_KEY"]  # your AI Studio key
 
 # ==== OFFLINE TEMPLATE GENERATOR ====
 def generate_template_prompt(tool, content_type, topic, style, platform=None, color_palette=None, mood=None):

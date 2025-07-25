@@ -53,11 +53,11 @@ def generate_gemini_prompt(tool, content_type, topic, style, platform=None, colo
     if response.status_code == 429 or (isinstance(data, dict) and data.get("error", {}).get("code") == 429):
         fallback = generate_template_prompt(tool, content_type, topic, style, platform, color_palette, mood)
         return (
-            "⚠️ Gemini free‑tier quota exceeded; showing offline template instead:\n\n"
+            "⚠️ Gemini free-tier quota exceeded; showing offline template instead:\n\n"
             + fallback
         )
 
-    # Any other non‑200
+    # Any other non-200
     if not response.ok:
         return f"Gemini API error: {data}"
 
@@ -69,10 +69,19 @@ def generate_gemini_prompt(tool, content_type, topic, style, platform=None, colo
 
 # ==== STREAMLIT UI ====
 def main():
-    st.set_page_config(page_title="AI Prompt Generator MVP")
-    st.title("🚀 AI Prompt Generator MVP")
-    st.markdown("Generate perfect prompts for AI tools like Gamma and Canva!")
+    st.set_page_config(page_title="Prompt Gen", page_icon="✨")
+    st.title("✨ Prompt Generator for AI Tools")
+    st.markdown("Generate perfect prompts for **Gamma** and **Canva** with optional Gemini AI support!")
 
+    # Sidebar examples and footer
+    st.sidebar.header("🔍 Examples")
+    st.sidebar.markdown("- Design a marketing poster")
+    st.sidebar.markdown("- Generate presentation content")
+    st.sidebar.markdown("- Write a blog header image prompt")
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("👨‍💻 Made with ❤️ by [Parth Shinge](https://github.com/parth-shinge)")
+
+    # Main inputs
     tool = st.selectbox("Choose a tool:", ["Gamma", "Canva"])
     content_type = st.text_input("Content type (e.g. presentation, infographic, poster):")
     topic = st.text_input("Topic:")

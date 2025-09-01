@@ -1,2 +1,11 @@
-.streamlit/secrets.toml
+__pycache__/
+*.pyc
+*.pyo
 promptgen.db
+.streamlit/secrets.toml
+.env
+*.env
+.DS_Store
+Thumbs.db
+venv/
+*.egg-info/

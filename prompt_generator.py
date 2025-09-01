@@ -308,7 +308,7 @@ def main():
             # show a logout button
             if st.sidebar.button("Logout Admin"):
                 st.session_state["admin_logged_in"] = False
-                st.experimental_rerun()
+                st.rerun()
             admin_panel()
         else:
             # show login form; if successful, admin_login_ui() sets admin_logged_in

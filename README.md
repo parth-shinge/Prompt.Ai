@@ -15,25 +15,7 @@
 - 🤖 Google Gemini API (via REST)
 - 💡 Simple offline logic fallback
 
-## 💻 How to Run This Locally
-
-1. **Clone the Repository**:
-git clone https://github.com/YOUR_USERNAME/prompt-gen.git
-cd prompt-gen
-
-2. **(Optional) Create Virtual Environment** :
-python -m venv venv
-venv\Scripts\activate  # for Windows
-
-3. **Install Dependencies**:
-pip install streamlit requests
-
-4. **Add your API Key
-Edit the line in prompt_generator.py:**:
-GEMINI_API_KEY = "your-api-key-here"
-
-5. **Run the App**:
-streamlit run prompt_generator.py
+## 💻 Website link: 
 
 🧠 Future Plans
 1. Add support for more tools (Beautify, Presentations, etc.)

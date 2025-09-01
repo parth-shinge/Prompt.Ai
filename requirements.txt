@@ -1,2 +1,4 @@
 streamlit
 requests
+sqlite3  # (not needed, built-in, but SQLAlchemy if you added)
+sqlalchemy

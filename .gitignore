@@ -1,11 +1,56 @@
+# Byte-compiled / cache files
 __pycache__/
-*.pyc
+*.py[cod]
 *.pyo
-promptgen.db
-.streamlit/secrets.toml
-.env
-*.env
+*.pyd
+*.pkl
+
+# Virtual environment
+.env/
+.venv/
+env/
+venv/
+
+# VSCode / IDE stuff
+.vscode/
+.idea/
+
+# OS files
 .DS_Store
 Thumbs.db
-venv/
+Desktop.ini
+
+# Streamlit secrets
+.streamlit/secrets.toml
+
+# Local database & artifacts
+promptgen.db
+artifacts/
+ranker.pkl
+*.sqlite3
+
+# Logs
+*.log
+
+# Zips / backups
+*.zip
+
+# Jupyter checkpoints
+.ipynb_checkpoints/
+
+# Python packaging
 *.egg-info/
+dist/
+build/
+
+# Swap / temp files
+*.swp
+*.swo
+*.bak
+*.tmp
+
+# Coverage / testing
+.coverage
+htmlcov/
+.tox/
+.pytest_cache/

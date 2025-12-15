@@ -647,28 +647,6 @@ def admin_panel():
                         else:
                             st.error("Could not record choice: " + (res or "unknown"))
 
-def _mark_pair_labeled(pairs_path: str, offline_id: int, gemini_id: int, chosen_id: int, chosen_model: str, user_id: int):
-    # read all, update matching pair
-    import json
-    lines = []
-    try:
-        with open(pairs_path, "r", encoding="utf-8") as fh:
-            for ln in fh.read().splitlines():
-                try:
-                    obj = json.loads(ln)
-                    if obj.get("offline_id") == offline_id and obj.get("gemini_id") == gemini_id and not obj.get("labeled"):
-                        obj["labeled"] = True
-                        obj["chosen_id"] = chosen_id
-                        obj["chosen_model"] = chosen_model
-                        obj["labeled_by"] = int(user_id)
-                    lines.append(json.dumps(obj))
-                except Exception:
-                    lines.append(ln)
-        with open(pairs_path, "w", encoding="utf-8") as fh:
-            fh.write("\n".join(lines) + ("\n" if lines else ""))
-    except Exception:
-        pass
-
         if st.button("Train embedding-based ranker (if available)"):
             # It will call ranker.train_with_embeddings using dataset from get_choice_dataset
             dataset = get_choice_dataset()
@@ -690,7 +668,7 @@ def _mark_pair_labeled(pairs_path: str, offline_id: int, gemini_id: int, chosen_
                     except Exception:
                         pass
                     st.error("Embedding train failed: " + str(e))
-                
+
 
         if st.button("Train TF-IDF ranker (fallback)"):
             dataset = get_choice_dataset()
@@ -709,6 +687,18 @@ def _mark_pair_labeled(pairs_path: str, offline_id: int, gemini_id: int, chosen_
 
         st.markdown("---")
         st.subheader("Model comparison (5-fold CV)")
+        metric_options = [
+            "accuracy",
+            "f1_macro",
+            "f1_micro",
+            "f1_weighted",
+            "precision_macro",
+            "precision_weighted",
+            "recall_macro",
+            "recall_weighted",
+        ]
+        selected_metric = st.selectbox("Primary metric to display", metric_options, index=0, key="model_comp_metric")
+
         if st.button("Run quick comparison"):
             dataset = get_choice_dataset()
             if not dataset:
@@ -726,7 +716,13 @@ def _mark_pair_labeled(pairs_path: str, offline_id: int, gemini_id: int, chosen_
                         if isinstance(v, dict) and v.get("error"):
                             st.warning(f"{k} comparison unavailable: {v.get('error')}")
                             continue
-                        mean_val = v.get("mean") if isinstance(v, dict) else None
+                        # Respect new report shape: prefer 'means' dict, fallback to legacy 'mean'
+                        mean_val = None
+                        if isinstance(v, dict):
+                            mean_val = v.get("means", {}).get(selected_metric)
+                            if mean_val is None:
+                                # fallback for legacy or where metric not computed
+                                mean_val = v.get("mean")
                         try:
                             mean_num = float(mean_val) if mean_val is not None and not (isinstance(mean_val, float) and math.isnan(mean_val)) else None
                         except Exception:
@@ -741,12 +737,38 @@ def _mark_pair_labeled(pairs_path: str, offline_id: int, gemini_id: int, chosen_
                         fig, ax = plt.subplots(figsize=(4,3))
                         ax.bar(labels_x, means)
                         ax.set_ylim(0, 1)
-                        ax.set_ylabel("Mean CV Accuracy")
+                        ax.set_ylabel(f"Mean CV {selected_metric}")
                         st.pyplot(fig)
+
+                    # Build a per-model metric breakdown table
+                    try:
+                        import json
+                        rows = []
+                        for k, v in results.items():
+                            row = {"model": k}
+                            if isinstance(v, dict) and v.get("error"):
+                                row["error"] = v.get("error")
+                                rows.append(row)
+                                continue
+                            for m in metric_options:
+                                mean_val = v.get("means", {}).get(m)
+                                folds = v.get("cv_scores", {}).get(m, [])
+                                row[f"{m}_mean"] = mean_val
+                                # store fold values as JSON string for readability
+                                row[f"{m}_folds"] = json.dumps(folds)
+                            rows.append(row)
+                        if rows:
+                            df = pd.DataFrame(rows).set_index("model")
+                            with st.expander("Per-model metric breakdown"):
+                                st.dataframe(df)
+                    except Exception:
+                        # non-fatal UI rendering failure
+                        pass
                 except Exception as e:
                     st.error("Comparison failed: " + str(e))
         return
 
+    # Other admin views
     with SessionLocal() as session:
         if choice == "View Users":
             st.subheader("👤 Users")
@@ -804,6 +826,29 @@ def _mark_pair_labeled(pairs_path: str, offline_id: int, gemini_id: int, chosen_
                 st.download_button("📥 Download CSV", data=csv, file_name="choices_dataset.csv", mime="text/csv")
             else:
                 st.info("No choices recorded yet. Use Generate → Hybrid → Generate both and choose to record choices.")
+
+def _mark_pair_labeled(pairs_path: str, offline_id: int, gemini_id: int, chosen_id: int, chosen_model: str, user_id: int):
+    # read all, update matching pair
+    import json
+    lines = []
+    try:
+        with open(pairs_path, "r", encoding="utf-8") as fh:
+            for ln in fh.read().splitlines():
+                try:
+                    obj = json.loads(ln)
+                    if obj.get("offline_id") == offline_id and obj.get("gemini_id") == gemini_id and not obj.get("labeled"):
+                        obj["labeled"] = True
+                        obj["chosen_id"] = chosen_id
+                        obj["chosen_model"] = chosen_model
+                        obj["labeled_by"] = int(user_id)
+                    lines.append(json.dumps(obj))
+                except Exception:
+                    lines.append(ln)
+        with open(pairs_path, "w", encoding="utf-8") as fh:
+            fh.write("\n".join(lines) + ("\n" if lines else ""))
+    except Exception:
+        pass
+    
 
 
 # User auth UI

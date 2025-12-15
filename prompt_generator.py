@@ -505,6 +505,29 @@ def admin_panel():
         ]
         selected_emb = st.selectbox("Embedding model", emb_models, index=0, key="emb_model_select")
 
+        # Data sufficiency indicator: show number of examples and samples per class
+        dataset = get_choice_dataset()
+        if not dataset:
+            st.warning("No choice dataset available yet — generate Hybrid prompts and record choices to collect labeled examples.")
+            samples_info = {}
+        else:
+            # dataset is list of (text, label)
+            _, labels = zip(*dataset)
+            from collections import Counter
+            counts = Counter(labels)
+            total = len(labels)
+            samples_info = dict(counts)
+            st.info(f"Dataset: {total} examples across {len(counts)} classe(s). Samples per class: {dict(counts)}")
+
+        # Calculate CV feasibility for default 5-fold
+        def _cv_feasible(counts_dict, k=5):
+            if not counts_dict:
+                return False
+            return all(c >= k for c in counts_dict.values())
+
+        if samples_info and not _cv_feasible(samples_info, k=5):
+            st.info("tfidf cross-validation not feasible on this dataset (too few samples per class).")
+
         if st.button("Train embedding-based ranker (if available)"):
             # It will call ranker.train_with_embeddings using dataset from get_choice_dataset
             dataset = get_choice_dataset()
@@ -517,7 +540,16 @@ def admin_panel():
                     st.success(f"Embedding-based ranker trained (cv acc ≈ {acc:.3f})")
                     st.json(rep)
                 except Exception as e:
+                    # Log the error for later inspection and surface a friendly message
+                    try:
+                        import json, datetime, os
+                        os.makedirs("artifacts", exist_ok=True)
+                        with open("artifacts/ranker_errors.log", "a", encoding="utf-8") as fh:
+                            fh.write(json.dumps({"ts": datetime.datetime.utcnow().isoformat() + "Z", "error": str(e)}) + "\n")
+                    except Exception:
+                        pass
                     st.error("Embedding train failed: " + str(e))
+                
 
         if st.button("Train TF-IDF ranker (fallback)"):
             dataset = get_choice_dataset()
@@ -529,6 +561,8 @@ def admin_panel():
                     acc, rep = train_basic(list(texts), list(labels), save_path=RANKER_PATH)
                     st.success(f"TF-IDF ranker trained (cv acc ≈ {acc:.3f})")
                     st.json(rep)
+                    if rep.get("note") == "no_cv":
+                        st.info("TF-IDF cross-validation not feasible on this dataset (too few samples per class). The model was still trained but CV was skipped.")
                 except Exception as e:
                     st.error("TF-IDF train failed: " + str(e))
 

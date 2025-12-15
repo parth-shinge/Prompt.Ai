@@ -26,6 +26,81 @@ except Exception:
     SentenceTransformer = None
     _HAS_ST = False
 
+
+def _load_embedder(embed_model_name: str):
+    """Attempt to load a sentence-transformers embedder, with a safe CPU-first
+    strategy. If SentenceTransformer fails due to 'meta' tensor initialization,
+    fallback to HF AutoModel+AutoTokenizer and return a callable that maps
+    list[str] -> np.ndarray.
+    Raises RuntimeError with helpful instructions if both attempts fail.
+    """
+    # Try SentenceTransformer on CPU first
+    try:
+        if SentenceTransformer is None:
+            raise RuntimeError("sentence-transformers not available")
+        st = SentenceTransformer(embed_model_name, device="cpu")
+        return st
+    except Exception as e:
+        msg = str(e)
+        # Detect meta-tensor / to_empty hints
+        if "meta tensor" in msg or "to_empty" in msg:
+            # Try transformers fallback
+            try:
+                from transformers import AutoTokenizer, AutoModel
+                import torch
+                import os
+
+                # allow HUGGINGFACE_TOKEN for private models
+                hf_token = os.environ.get("HUGGINGFACE_TOKEN")
+                candidates = [embed_model_name, f"sentence-transformers/{embed_model_name}"]
+                last_exc = None
+                tokenizer = None
+                model = None
+                for candidate in candidates:
+                    try:
+                        tokenizer = AutoTokenizer.from_pretrained(candidate, use_auth_token=hf_token)
+                        model = AutoModel.from_pretrained(candidate, low_cpu_mem_usage=False, device_map=None, use_auth_token=hf_token)
+                        model.to("cpu")
+                        chosen = candidate
+                        break
+                    except Exception as e2:
+                        last_exc = e2
+                        tokenizer = None
+                        model = None
+
+                if model is None or tokenizer is None:
+                    raise last_exc or RuntimeError("Could not load model via transformers")
+
+                def _emb_fn(texts_list):
+                    enc = tokenizer(texts_list, padding=True, truncation=True, return_tensors="pt")
+                    with torch.no_grad():
+                        out = model(**{k: v.to("cpu") for k, v in enc.items()})
+                    hidden = out.last_hidden_state
+                    mask = enc.get("attention_mask")
+                    if mask is None:
+                        emb = hidden.mean(dim=1)
+                    else:
+                        mask = mask.unsqueeze(-1)
+                        summed = (hidden * mask).sum(dim=1)
+                        counts = mask.sum(dim=1).clamp(min=1)
+                        emb = summed / counts
+                    return emb.cpu().numpy()
+
+                return _emb_fn
+            except Exception as e2:
+                # Log the combined error
+                try:
+                    import json, datetime, os
+                    os.makedirs("artifacts", exist_ok=True)
+                    with open("artifacts/ranker_errors.log", "a", encoding="utf-8") as fh:
+                        fh.write(json.dumps({"ts": datetime.datetime.utcnow().isoformat() + "Z", "error": str(e), "fallback_error": str(e2)}) + "\n")
+                except Exception:
+                    pass
+                raise RuntimeError("Failed to load embedding model (SentenceTransformer failed with meta-tensor error, and transformers fallback failed). See artifacts/ranker_errors.log for details. Original: " + msg + ". Fallback: " + str(e2))
+        else:
+            # re-raise with context
+            raise
+
 # Basic TF-IDF + logistic training
 def _compute_safe_cv(labels: List[str], requested_cv: int) -> int:
     n_samples = len(labels)
@@ -66,10 +141,19 @@ def train_with_embeddings(texts: List[str], labels: List[str], embed_model_name:
     if len(set(labels)) < 2 or len(labels) < 2:
         raise ValueError("Need at least 2 samples and 2 classes to train.")
     safe_cv = _compute_safe_cv(labels, cv)
-    # Cache models under local folder if HF cache not desired; by default SentenceTransformer caches to ~/.cache
+    # Load an embedder (SentenceTransformer instance or fallback callable)
     # Users can set SENTENCE_TRANSFORMERS_HOME to a local directory to persist models between runs.
-    embedder = SentenceTransformer(embed_model_name)
-    X = embedder.encode(texts, show_progress_bar=False, convert_to_numpy=True)
+    try:
+        embedder = _load_embedder(embed_model_name)
+    except Exception as e:
+        # Surface a helpful error for the calling code/UI
+        raise RuntimeError(f"Failed to initialize embedding model '{embed_model_name}': {e}")
+
+    # embedder may be a SentenceTransformer instance with .encode, or a callable
+    if hasattr(embedder, "encode"):
+        X = embedder.encode(texts, show_progress_bar=False, convert_to_numpy=True)
+    else:
+        X = embedder(texts)
     scaler = StandardScaler()
     Xs = scaler.fit_transform(X)
     clf = LogisticRegression(max_iter=2000, solver="liblinear")

@@ -53,6 +53,10 @@ try:
     GEMINI_MAX_RETRIES = int(_gr) if _gr is not None else 2
 except Exception:
     GEMINI_MAX_RETRIES = 2
+
+# Increase default retries slightly to handle transient 5xx/503 errors
+if GEMINI_MAX_RETRIES < 3:
+    GEMINI_MAX_RETRIES = 3
 ADMIN_USERNAME = st.secrets.get("ADMIN_USERNAME", None)
 ADMIN_PW_SALT = st.secrets.get("ADMIN_PW_SALT", None)
 ADMIN_PW_HASH = st.secrets.get("ADMIN_PW_HASH", None)
@@ -146,18 +150,34 @@ def generate_gemini_prompt(tool, content_type, topic, style, platform=None, colo
     # Respect configured rate limit and retry on transient network errors/timeouts
     attempt = 0
     last_exception = None
+    # ensure artifacts folder for logging
+    try:
+        import os
+        os.makedirs("artifacts", exist_ok=True)
+    except Exception:
+        pass
     while attempt < GEMINI_MAX_RETRIES:
         attempt += 1
         if attempt > 1:
             # backoff before retry
-            wait = GEMINI_RATE_LIMIT_SECONDS + (2 ** (attempt - 1))
-            time.sleep(min(wait, 60))
+            # jittered exponential backoff with capped wait
+            base = GEMINI_RATE_LIMIT_SECONDS + (2 ** (attempt - 1))
+            jitter = random.uniform(0.8, 1.2)
+            wait = min(base * jitter, 60)
+            time.sleep(wait)
 
         time.sleep(GEMINI_RATE_LIMIT_SECONDS)
         try:
             resp = requests.post(url, headers=headers, json=payload, timeout=GEMINI_REQUEST_TIMEOUT)
         except requests.exceptions.Timeout as e:
             last_exception = e
+            # record timeout into log
+            try:
+                import json, datetime
+                with open("artifacts/gemini_errors.log", "a", encoding="utf-8") as fh:
+                    fh.write(json.dumps({"ts": datetime.datetime.utcnow().isoformat() + "Z", "type": "timeout", "attempt": attempt, "timeout": GEMINI_REQUEST_TIMEOUT}) + "\n")
+            except Exception:
+                pass
             # try again unless we've exhausted retries
             if attempt >= GEMINI_MAX_RETRIES:
                 fallback = generate_template_prompt(tool, content_type, topic, style, platform, color_palette, mood)
@@ -165,6 +185,13 @@ def generate_gemini_prompt(tool, content_type, topic, style, platform=None, colo
             continue
         except requests.exceptions.RequestException as e:
             last_exception = e
+            # log request exception
+            try:
+                import json, datetime
+                with open("artifacts/gemini_errors.log", "a", encoding="utf-8") as fh:
+                    fh.write(json.dumps({"ts": datetime.datetime.utcnow().isoformat() + "Z", "type": "request_exception", "attempt": attempt, "error": str(e)}) + "\n")
+            except Exception:
+                pass
             if attempt >= GEMINI_MAX_RETRIES:
                 fallback = generate_template_prompt(tool, content_type, topic, style, platform, color_palette, mood)
                 return f"⚠️ Gemini request failed ({e}); showing offline template instead:\n\n" + fallback
@@ -179,6 +206,13 @@ def generate_gemini_prompt(tool, content_type, topic, style, platform=None, colo
         # transient server errors — retry
         if resp.status_code in (502, 503, 504):
             last_exception = Exception(f"HTTP {resp.status_code}")
+            try:
+                import json, datetime
+                body_preview = resp.text[:400]
+                with open("artifacts/gemini_errors.log", "a", encoding="utf-8") as fh:
+                    fh.write(json.dumps({"ts": datetime.datetime.utcnow().isoformat() + "Z", "type": "http_5xx", "attempt": attempt, "status": resp.status_code, "body_preview": body_preview}) + "\n")
+            except Exception:
+                pass
             if attempt >= GEMINI_MAX_RETRIES:
                 fallback = generate_template_prompt(tool, content_type, topic, style, platform, color_palette, mood)
                 return f"⚠️ Gemini returned HTTP {resp.status_code}; showing offline template instead:\n\n" + fallback
@@ -193,6 +227,13 @@ def generate_gemini_prompt(tool, content_type, topic, style, platform=None, colo
 
         if not resp.ok:
             # non-retriable error — return it
+            try:
+                import json, datetime
+                body_preview = resp.text[:400]
+                with open("artifacts/gemini_errors.log", "a", encoding="utf-8") as fh:
+                    fh.write(json.dumps({"ts": datetime.datetime.utcnow().isoformat() + "Z", "type": "http_error", "status": resp.status_code, "body_preview": body_preview}) + "\n")
+            except Exception:
+                pass
             return f"Gemini API error: HTTP {resp.status_code} - {data}"
 
         try:
@@ -416,6 +457,27 @@ def show_dashboard():
                 st.success(msg)
             else:
                 st.error(msg)
+        # Show recent Gemini errors (if any)
+        with st.expander("Recent Gemini errors (last 10)", expanded=False):
+            try:
+                import os, json
+                log_path = os.path.join("artifacts", "gemini_errors.log")
+                if os.path.exists(log_path):
+                    lines = open(log_path, "r", encoding="utf-8").read().splitlines()
+                    for ln in lines[-10:][::-1]:
+                        try:
+                            obj = json.loads(ln)
+                            ts = obj.get("ts", "?")
+                            typ = obj.get("type", "")
+                            status = obj.get("status")
+                            body = obj.get("body_preview") or obj.get("error") or ""
+                            st.markdown(f"- **{ts}** — `{typ}` {status or ''} — {body}")
+                        except Exception:
+                            st.markdown(f"- {ln[:200]}")
+                else:
+                    st.info("No Gemini errors logged yet.")
+            except Exception:
+                st.info("Could not read log file.")
     else:
         st.info("Gemini API key not configured in Streamlit secrets.")
 

@@ -14,7 +14,7 @@ from typing import List, Tuple, Dict, Any, Union
 
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
-from sklearn.model_selection import cross_val_score, StratifiedKFold
+from sklearn.model_selection import cross_val_score, StratifiedKFold, cross_validate
 from sklearn.preprocessing import StandardScaler
 from sklearn.pipeline import make_pipeline
 import numpy as np
@@ -88,15 +88,45 @@ def _load_embedder(embed_model_name: str):
 
                 return _emb_fn
             except Exception as e2:
-                # Log the combined error
+                # Log the combined error and provide a deterministic TF-IDF fallback embedder
                 try:
                     import json, datetime, os
                     os.makedirs("artifacts", exist_ok=True)
                     with open("artifacts/ranker_errors.log", "a", encoding="utf-8") as fh:
-                        fh.write(json.dumps({"ts": datetime.datetime.utcnow().isoformat() + "Z", "error": str(e), "fallback_error": str(e2)}) + "\n")
+                        # use timezone-aware UTC timestamps
+                        fh.write(json.dumps({"ts": datetime.datetime.now(datetime.timezone.utc).isoformat(), "error": str(e), "fallback_error": str(e2)}) + "\n")
                 except Exception:
                     pass
-                raise RuntimeError("Failed to load embedding model (SentenceTransformer failed with meta-tensor error, and transformers fallback failed). See artifacts/ranker_errors.log for details. Original: " + msg + ". Fallback: " + str(e2))
+
+                # As a robust, CPU-only fallback, return a TF-IDF based embedder that
+                # is deterministic and does not rely on PyTorch/HF model weights.
+                from sklearn.feature_extraction.text import TfidfVectorizer
+
+                class TFIDFEmbedder:
+                    def __init__(self, max_features=384):
+                        self.max_features = max_features
+                        self.vectorizer = None
+
+                    def __call__(self, texts):
+                        # lazy-fit vectorizer on first call
+                        if self.vectorizer is None:
+                            self.vectorizer = TfidfVectorizer(max_features=self.max_features, ngram_range=(1,2))
+                            X = self.vectorizer.fit_transform(texts)
+                        else:
+                            X = self.vectorizer.transform(texts)
+                        # convert to dense float32 numpy arrays to mimic other embedders
+                        return X.toarray().astype("float32")
+
+                try:
+                    # Log that we are falling back to TF-IDF embedder for visibility
+                    import json, datetime, os
+                    os.makedirs("artifacts", exist_ok=True)
+                    with open("artifacts/ranker_errors.log", "a", encoding="utf-8") as fh:
+                        fh.write(json.dumps({"ts": datetime.datetime.now(datetime.timezone.utc).isoformat(), "info": "using_tfidf_fallback", "orig_error": str(e), "fallback_error": str(e2)}) + "\n")
+                except Exception:
+                    pass
+
+                return TFIDFEmbedder()
         else:
             # re-raise with context
             raise
@@ -121,17 +151,30 @@ def train_basic(texts: List[str], labels: List[str], save_path: str = "ranker.pk
     vec = TfidfVectorizer(max_features=5000, ngram_range=(1,2))
     X = vec.fit_transform(texts)
     clf = LogisticRegression(max_iter=2000, solver="liblinear")
+    metrics = {
+        "accuracy": "accuracy",
+        "f1_macro": "f1_macro",
+        "f1_micro": "f1_micro",
+        "f1_weighted": "f1_weighted",
+        "precision_macro": "precision_macro",
+        "precision_weighted": "precision_weighted",
+        "recall_macro": "recall_macro",
+        "recall_weighted": "recall_weighted",
+    }
     if safe_cv >= 2:
-        cv_scores = cross_val_score(clf, X, labels, cv=StratifiedKFold(n_splits=safe_cv, shuffle=True, random_state=42), scoring="accuracy")
-        mean_acc = float(np.mean(cv_scores))
+        cv_res = cross_validate(clf, X, labels, cv=StratifiedKFold(n_splits=safe_cv, shuffle=True, random_state=42), scoring=metrics, return_train_score=False)
+        # extract metrics into lists
+        cv_scores = {k: [float(v) for v in cv_res[f"test_{k}"]] for k in metrics.keys()}
+        mean_acc = float(np.mean(cv_scores["accuracy"]))
     else:
-        cv_scores = []
+        cv_scores = {k: [] for k in metrics.keys()}
         mean_acc = float("nan")
     clf.fit(X, labels)
     payload = {"type":"tfidf", "model":clf, "vectorizer":vec}
     with open(save_path, "wb") as f:
         pickle.dump(payload, f)
-    return mean_acc, {"cv_scores": [float(s) for s in cv_scores], "mean": mean_acc, "note": ("no_cv" if safe_cv < 2 else "ok")}
+    means = {k: (float(np.mean(cv_scores[k])) if cv_scores[k] else float("nan")) for k in cv_scores}
+    return mean_acc, {"cv_scores": cv_scores, "means": means, "mean": mean_acc, "note": ("no_cv" if safe_cv < 2 else "ok")}
 
 
 # Embedding-based training (logistic on embeddings). Keeps and returns saved model
@@ -157,11 +200,22 @@ def train_with_embeddings(texts: List[str], labels: List[str], embed_model_name:
     scaler = StandardScaler()
     Xs = scaler.fit_transform(X)
     clf = LogisticRegression(max_iter=2000, solver="liblinear")
+    metrics = {
+        "accuracy": "accuracy",
+        "f1_macro": "f1_macro",
+        "f1_micro": "f1_micro",
+        "f1_weighted": "f1_weighted",
+        "precision_macro": "precision_macro",
+        "precision_weighted": "precision_weighted",
+        "recall_macro": "recall_macro",
+        "recall_weighted": "recall_weighted",
+    }
     if safe_cv >= 2:
-        cv_scores = cross_val_score(clf, Xs, labels, cv=StratifiedKFold(n_splits=safe_cv, shuffle=True, random_state=42), scoring="accuracy")
-        mean_acc = float(np.mean(cv_scores))
+        cv_res = cross_validate(clf, Xs, labels, cv=StratifiedKFold(n_splits=safe_cv, shuffle=True, random_state=42), scoring=metrics, return_train_score=False)
+        cv_scores = {k: [float(v) for v in cv_res[f"test_{k}"]] for k in metrics.keys()}
+        mean_acc = float(np.mean(cv_scores["accuracy"]))
     else:
-        cv_scores = []
+        cv_scores = {k: [] for k in metrics.keys()}
         mean_acc = float("nan")
     clf.fit(Xs, labels)
     payload = {
@@ -172,7 +226,8 @@ def train_with_embeddings(texts: List[str], labels: List[str], embed_model_name:
     }
     with open(save_path, "wb") as f:
         pickle.dump(payload, f)
-    return mean_acc, {"cv_scores": [float(s) for s in cv_scores], "mean": mean_acc, "embed_model": embed_model_name, "note": ("no_cv" if safe_cv < 2 else "ok")}
+    means = {k: (float(np.mean(cv_scores[k])) if cv_scores[k] else float("nan")) for k in cv_scores}
+    return mean_acc, {"cv_scores": cv_scores, "means": means, "mean": mean_acc, "embed_model": embed_model_name, "note": ("no_cv" if safe_cv < 2 else "ok")}
 
 
 def compare_models(texts: List[str], labels: List[str], embed_model_name: str = "all-MiniLM-L6-v2", cv: int = 5):

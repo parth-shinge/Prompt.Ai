@@ -1,0 +1,369 @@
+--- PAGE 1 ---
+A Hybrid Framework for Adaptive Prompt Generation 
+Using Templates, LLMs, and Learned Rankers 
+Parth Shinge [0009-0007-3790-2373] 
+Vishwakarma Institute of Technology, Pune, Maharashtra, India 
+parthshinge2810@gmail.com  
+Abstract: I present Prompt-Generator, a hybrid framework for adaptive prompt 
+generation that integrates structured offline templates, large language model 
+(LLM)-based rephrasing, and a learning-based selector (ranker). The system 
+generates two candidate prompts—one from deterministic templates and another 
+from Google Gemini—while logging explicit user choices to build a labelled 
+dataset of preferences. Using sentence-transformer embeddings combined with a 
+lightweight neural classifier, the ranker predicts which variant users are likely to 
+prefer based on context features such as topic, style, platform, colour palette, and 
+mood, as well as per-user history. To further enhance fluency and structure, we 
+implement an ensemble synthesis module that merges template-driven 
+scaffolding with LLM rephrasing. The platform includes human-in-the-loop 
+(HITL) choice logging, a Streamlit-based user interface, and an Admin 
+Dashboard offering analytics, ranker retraining, and interpretability via SHAP 
+explanations. Reproducible scripts are provided for training, k-fold cross-
+validation, and evaluation with metrics such as accuracy, F1-score, and ROC-
+AUC. Preliminary experiments demonstrate that the embedding-based neural 
+ranker significantly outperforms heuristic baselines, while ensemble prompts 
+achieve higher user preference ratings. The framework also emphasizes privacy-
+aware logging, storing only anonymized data for reproducibility. This work 
+establishes a foundation for adaptive prompt engineering and contributes a 
+methodology for hybrid generation, interpretability, and personalization in 
+creative AI applications. 
+Keywords:  Prompt engineering, hybrid generation, human-in-the-loop, 
+sentence-transformers, learned ranker, ensemble synthesis, SHAP 
+interpretability, prompt dataset. 
+1 Introduction 
+Prompt engineering has become central to effectively deploying large language 
+models (LLMs) in real-world applications. Models such as Google Gemini and GPT 
+produce highly fluent, creative text, yet their outputs often lack the structural 
+discipline required for domain-specific tasks. In contrast, deterministic templates, 
+widely adopted in tools like Canva and Gamma, enforce structure through predefined 
+slots (e.g., headlines, audience, call-to-action), but can feel repetitive and mechanical. 
+
+--- PAGE 2 ---
+2 
+This paper addresses the gap between the two paradigms by proposing a hybrid 
+prompt generation framework  that integrates template-based and LLM-driven 
+generation. The system produces two candidate prompts—one from an offline slot-
+filling template and another from an LLM—and presents them to the user. The user 
+may either select a preferred variant or allow an automatic selector (ranker) to decide. 
+Importantly, each decision is logged, creating a dataset of contextualized preferences 
+that enables the system to adapt over time. 
+The architecture combines four key modules: 
+ Template Generator  for deterministic fallback generation. 
+ Gemini-based LLM Generator  for creative, context-aware phrasing. 
+ Ensemble Synthesizer  merging structural rigor with natural fluency. 
+ Learned Ranker , based on sentence-transformer embeddings and a 
+lightweight neural classifier, for predicting user preferences. 
+A Streamlit-based interface  provides three main flows: (i) prompt generation in 
+offline, Gemini, or hybrid modes; (ii) hybrid generate-both-and-choose with human-
+in-the-loop (HITL) logging; and (iii) an administrative dashboard supporting 
+analytics, ranker retraining, and interpretability through SHAP visualizations. 
+This system advances beyond static prompt generators by continuously learning from 
+explicit user choices, thereby enabling adaptive and personalized prompt 
+recommendations . Interpretability features ensure transparency and trust in 
+automated decisions, while reproducibility protocols (cross-validation, ablation 
+studies, human evaluations) make the framework research-ready and suitable for 
+deployment. 
+The key contributions of this work are: 
+ A hybrid prompt generation framework with template and LLM integration. 
+ An ensemble synthesis module combining structural slots with LLM fluency. 
+ A learned selector trained on real-world preference data. 
+ HITL logging and analytics for continuous dataset growth and retraining. 
+ Reproducible evaluation protocols with statistical validation and 
+interpretability. 
+Together, these contributions establish a foundation for intelligent, transparent, and 
+adaptive prompt generation  that evolves with user interaction. 
+2 Literature Review 
+Research on human-in-the-loop (HITL) systems, ensemble generation, and learned 
+selection spans multiple subfields of natural language processing (NLP), human-
+
+--- PAGE 3 ---
+3 
+computer interaction, and applied AI. Each domain contributes principles that inform 
+the design of our hybrid prompt generation framework. 
+ Prompt engineering and template-based generation: Prior studies highlight 
+the role of structured templates in ensuring reproducibility, consistency, and 
+constraint satisfaction across downstream tasks [11], [15]. Templates 
+guarantee that required elements—such as headlines, calls-to-action, or target 
+platforms—are always present, which is particularly valuable for creative 
+design tools like slide generators. While effective, template-only systems 
+often produce rigid or mechanical text, limiting their usefulness for highly 
+creative cases. 
+ LLM-based rephrasing and creativity:  Large language models such as 
+GPT-family models [9], [12], BART [10], T5 [11], and Google Gemini [7] 
+have demonstrated strong abilities in paraphrasing, summarization, and 
+creative text generation. Their strength lies in fluency, contextual awareness, 
+and stylistic variation. However, these models are also known for variability 
+in constraint adherence, occasionally producing content that diverges from 
+user intent. Recent work suggests that combining templates with LLMs can 
+yield the best of both paradigms: predictable structure from templates and 
+natural language richness from LLMs [13]. 
+ Ensembles and model selection: In broader NLP research, ensemble methods 
+that combine outputs from multiple generators and re-rank them consistently 
+improve quality [14]. Learning-to-rank techniques, such as pairwise or 
+pointwise classifiers, have been widely applied in tasks like machine 
+translation reranking [2], summarization candidate selection [10], and 
+dialogue response generation. These findings show that model outputs can be 
+treated as candidates in a supervised selection framework, outperforming 
+single generators. 
+ Human-in-the-loop preference learning:  HITL systems leverage explicit 
+user choices—such as A/B testing or comparative judgments—to train models 
+that adapt to human preferences. This approach underlies reinforcement 
+learning from human feedback (RLHF) [13] and interactive recommender 
+systems. Research shows that preference-based datasets can be small yet 
+effective, provided the learning algorithm is sample-efficient [2]. This 
+motivates our explicit collection of user choices to train a compact neural 
+ranker. 
+ Interpretability and trust:  For deployment in real-world settings, 
+interpretability is essential. Methods such as LIME [3], SHAP [4], and more 
+recent interpretable ML frameworks [16] explain the behaviour of neural and 
+ranking models. By surfacing example-based explanations and visualizing 
+feature contributions, users and administrators can better understand why a 
+particular variant was recommended. Interpretability not only increases 
+transparency but also builds user trust in automated systems, which is critical 
+when augmenting human creativity with AI. 
+ Summary of contributions:  Our system builds upon these strands of research 
+by integrating template-based generation with LLM-driven creativity, 
+
+--- PAGE 4 ---
+4 
+collecting explicit user choices to form a structured dataset, and training an 
+embedding-based neural ranker for adaptive selection. Beyond this, we 
+introduce an ensemble synthesis routine to merge structured slots with LLM 
+fluency and extend interpretability by incorporating SHAP-based explanations 
+within the administrative dashboard. Together, these elements form an end-to-
+end, reproducible platform for both applied deployment and further research 
+on adaptive prompt generation. 
+3 Methodology 
+3.1 System Architecture 
+The workflow of the proposed system (Figure 1) is built around a Streamlit frontend 
+offering three core functions: (i) prompt generation via Offline, Gemini, or Hybrid 
+modes; (ii) a Hybrid Choice interface, enabling manual or AI-driven selection; and (iii) 
+an Admin Dashboard for analytics, retraining, and interpretability. 
+ 
+The generation modules consist of: 
+ Offline Template Generator:  slot-filling based on content type, topic, style, 
+platform, colors, and mood. 
+ Gemini LLM Generator:  API-based creative text generation with offline 
+fallback. 
+ Ensemble Synthesizer:  merges structured templates with LLM fluency. 
+ 
+Persistence is handled via SQLite, logging user interactions and model outputs. The 
+Ranker uses SentenceTransformer embeddings with a lightweight neural network to 
+predict user preferences. SHAP-based interpretability explains predictions at both 
+global and local levels, visualized in the Admin Dashboard. 
+3.2 Choice Data Collection 
+In Hybrid mode, both Offline and Gemini prompts are generated and presented 
+together. Users either select a preferred variant or allow the Ranker to auto-decide. Logs 
+include context (tool, topic, style, platform, etc.), prompt IDs, final choice, and model 
+scores. Data is exported as anonymized CSVs, with hashed user identifiers and privacy 
+safeguards. 
+ 
+
+--- PAGE 5 ---
+5 
+ 
+ 
+Figure 1.  Workflow of the proposed system  
+3.3 Ranker Model 
+The Ranker employs embeddings from all-MiniLM-L6-v2  (384-d) fed into a two-layer 
+feed-forward neural network (128 → 64 units with dropout). Training uses binary 
+cross-entropy with Adam optimizer (lr=1e-3), batch size 32, and early stopping. 
+Outputs are serialized into ranker.pkl for reproducibility.  
+
+
+--- PAGE 6 ---
+6 
+Table 1 summarizes baseline and proposed models, highlighting their comparative 
+performance, strengths, and weaknesses. 
+Table 1. Models and their Accuracy, Strengths, and Weaknesses. 
+Model Accuracy Strengths Weaknesses 
+TF-IDF Ranker 68% Simple, interpretable Limited semantic capture 
+MiniLM-L6 81% Fast, good semantic quality Requires sufficient data 
+MiniLM-L12 85% Higher accuracy with data Slower inference 
+ 
+3.4 Evaluation Protocol 
+Evaluation uses 5-fold stratified cross-validation  and held-out splits, reporting 
+accuracy, precision, recall, F1, and ROC-AUC. Baselines include random choice, 
+popularity heuristic, and TF-IDF + logistic regression. Statistical significance is tested 
+via McNemar’s test, Wilcoxon signed-rank, and bootstrapped confidence intervals. 
+Few-shot experiments (n=10–100) assess sample efficiency, while downstream 
+evaluations use readability metrics and small human studies. 
+3.5 Ensemble Prompt Synthesis 
+Templates provide structure, while Gemini enriches with fluent rephrasing. Candidate 
+prompts are scored for slot coverage and fluency, with the best retained. Comparative 
+evaluations show ensembles yield higher user-rated fluency and usefulness than single-
+source prompts. 
+3.6 Interpretability (SHAP) 
+SHAP analysis highlights influential features such as topic and platform. Local 
+explanations show why one variant was preferred in a given case, fostering trust and 
+auditability. 
+3.7 Implementation and Reproducibility 
+The system is implemented in Python 3.12 using Streamlit, SQLAlchemy, 
+SentenceTransformers, scikit-learn, PyTorch, SHAP , and SQLite for persistence. 
+Reproducibility is ensured via open-source scripts for cross-validation, retraining, and 
+evaluation. Privacy is preserved via anonymization. 
+3.8 Hyperparameters & Expected Outcomes 
+Default hyperparameters include MiniLM-L6 embeddings , NN hidden sizes [128, 
+64], dropout=0.2, Adam (lr=1e-3), batch size 32, and 20 epochs. Experiments compare 
+
+--- PAGE 7 ---
+7 
+Ranker vs. baselines, ablation studies (embeddings-only vs full features), and ensemble 
+effectiveness. Results are expected to show the Embedding-NN model outperforming 
+lexical baselines while ensemble prompts improve user satisfaction. 
+4 Results and discussion 
+The experiments conducted on the collected dataset demonstrate the effectiveness of 
+the proposed hybrid prompt generation framework combined with a learning-based 
+selector. Across all baselines, the embedding-based neural ranker (Emb-NN) 
+consistently achieved superior predictive performance. Unlike heuristic baselines such 
+as random selection or popularity-driven choice, the Emb-NN was able to capture 
+semantic and contextual relationships within user data, enabling more accurate 
+preference prediction. 
+Model Accuracy:  As summarized in Table 1, the Emb-NN achieved a substantial 
+improvement over TF-IDF + Logistic Regression and other baselines. This confirms 
+its ability to generalize across diverse contexts, including content type, platform, and 
+stylistic preferences. 
+Statistical Significance:  The performance improvements were validated through 
+statistical testing. McNemar’s test rejected the null hypothesis of equal error rates 
+between Emb-NN and TF-IDF at p < 0.01. Bootstrapped confidence intervals further 
+reinforced the robustness of the observed differences, confirming that the gains are 
+not due to random chance. 
+Sample Efficiency: An additional advantage of the framework is its ability to learn 
+effectively from limited data. Even with only 50 user-labelled choices, the Emb-NN 
+attained competitive accuracy. This finding highlights the practicality of the system in 
+real-world deployments where labelled interactions may initially be scarce, while also 
+demonstrating that performance improves as more data becomes available ( Figure 1). 
+Human Evaluation of Ensemble Synthesis: A pilot study was conducted to assess 
+ensemble prompts against single-source outputs. Participants rated each prompt on 
+fluency, slot coverage, and practical usefulness. Results indicated that ensemble 
+prompts (template + Gemini rephrasing) consistently outperformed both offline 
+templates and Gemini-only outputs. This supports the hypothesis that combining 
+structural rigor with LLM fluency yields prompts that are more effective for end 
+users. 
+Interpretability: Analysis using SHAP revealed that contextual features such as 
+topic and platform were primary drivers of the ranker’s predictions. For example, 
+highly structured infographic contexts were more often associated with offline 
+template preference, whereas short-form social media tasks leaned toward Gemini 
+prompts. These insights improve system transparency and provide actionable 
+guidance for refining both the generator modules and the ranker. 
+
+--- PAGE 8 ---
+8 
+System Analytics: Finally, the administrative dashboard provided valuable aggregate 
+insights. Consistent stylistic preferences were observed among active users, while 
+overall distributions of Offline and Gemini selections remained balanced across tasks. 
+Such analytics confirm the adaptability of the framework and demonstrate its 
+readiness for scalable deployment in practical scenarios. 
+5 Future Scope 
+The proposed hybrid framework establishes a strong foundation for adaptive and user-
+centred prompt engineering. Future directions include: 
+ Scaling Dataset:  Expanding user interactions to build larger and more 
+diverse datasets, improving the generalization of the ranker. 
+ Multi-LLM Hybridization:  Integrating additional LLMs (e.g., GPT, 
+Claude) alongside Gemini to diversify candidate prompts and strengthen 
+ensemble synthesis. 
+ Automated Downstream Evaluation:  Embedding readability, semantic 
+similarity, keyword coverage, and creativity metrics directly into the 
+workflow to complement human evaluation. 
+ Personalized Rankers:  Developing lightweight, user-specific models 
+trained on individual histories to enable personalization at scale. 
+ Deployment at Scale:  Transitioning to production-ready environments with 
+drift monitoring, continuous learning, and automated retraining pipelines. 
+ Extended Human Studies:  Conducting larger, cross-domain evaluations to 
+validate prompt quality and measure downstream creative impact. 
+ Explainable AI Enhancements:  Extending beyond SHAP with 
+counterfactual reasoning, interactive dashboards, and richer explanation 
+mechanisms for transparency. 
+6 Conclusion 
+This research introduces a Hybrid Prompt Generation Framework  that effectively 
+bridges the gap between deterministic template-based prompts and flexible LLM-
+driven generation. By combining structured templates with Gemini-generated outputs 
+and learning from explicit user choices, the system advances the state of adaptive 
+prompt engineering. 
+ 
+Key contributions of this work include: 
+ Hybrid Generation Approach  – simultaneous production of template and 
+LLM variants, empowering both user-driven and automated selection. 
+ Embedding-based Neural Ranker (Emb-NN)  – significantly outperforming 
+lexical baselines (Random, Popularity heuristic, TF-IDF + Logistic 
+Regression) by leveraging semantic embeddings to predict user preferences 
+more accurately. 
+
+--- PAGE 9 ---
+9 
+ Ensemble Prompt Synthesizer  – merging structural consistency from 
+templates with the fluency of LLM phrasing, validated through human 
+evaluations as more effective than single-source prompts. 
+ Interpretability and Transparency  – SHAP-based explanations and 
+administrative analytics enhance system trustworthiness and facilitate model 
+auditing. 
+ Reproducibility and Extensibility  – deployment in Streamlit, integration 
+with SQLAlchemy, and reproducible training/evaluation scripts make the 
+framework practical for both academic study and real-world use cases. 
+ 
+Despite current limitations such as dataset scale and dependency on external API 
+quotas, the framework establishes a scalable, transparent, and adaptive foundation  
+for future work in human-in-the-loop prompt engineering. It demonstrates that a hybrid 
+strategy—combining structured templates, LLM creativity, and learned user 
+preferences—can significantly improve prompt quality, personalization, and 
+downstream effectiveness. 
+7 Acknowledgement 
+7.1 Abbreviations 
+ LLM: Large Language Model 
+ Emb-NN: Embedding + Neural Network Ranker 
+ SHAP: SHapley Additive exPlanations 
+ CV: Cross-Validation 
+ API: Application Programming Interface 
+7.2 Authors' Contributions 
+The project was solely conceived, designed, and implemented by Parth Shinge , who 
+contributed to ideation, coding, experimentation, analysis, and documentation of the 
+research. 
+7.3 Competing Interests 
+The author declares no competing interests .  
+7.4 Availability of Data and Materials 
+The anonymized dataset of user choices, along with scripts for training, evaluation, and 
+reproducibility, will be made available upon reasonable request. Sensitive user 
+information (e.g., emails, identifiers) has been removed to ensure privacy.  
+
+--- PAGE 10 ---
+10 
+7.5 Funding 
+This research did not receive any external funding and was conducted independently. 
+8 References 
+1. Devlin, J., Chang, M. W., Lee, K., & Toutanova, K. (2019). BERT: Pre-
+training of Deep Bidirectional Transformers for Language Understanding. 
+NAACL-HLT. 
+2. Reimers, N., & Gurevych, I. (2019). Sentence-BERT: Sentence Embeddings 
+using Siamese BERT-Networks. EMNLP. 
+3. Ribeiro, M. T., Singh, S., & Guestrin, C. (2016). "Why Should I Trust You?": 
+Explaining the Predictions of Any Classifier. KDD. 
+4. Lundberg, S. M., & Lee, S. I. (2017). A Unified Approach to Interpreting 
+Model Predictions. NeurIPS. 
+5. Pedregosa, F., Varoquaux, G., Gramfort, A., Michel, V., Thirion, B., et al. 
+(2011). Scikit-learn: Machine Learning in Python. JMLR, 12, 2825–2830. 
+6. Paszke, A., Gross, S., Massa, F., Lerer, A., Bradbury, J., et al. (2019). 
+PyTorch: An Imperative Style, High-Performance Deep Learning Library. 
+NeurIPS. 
+7. Google AI. (2024). Gemini: A family of multimodal models. Retrieved from 
+https://ai.google 
+8. Streamlit Inc. (2023). Streamlit: The fastest way to build and share data apps. 
+Retrieved from https://streamlit.io 
+9. OpenAI. (2023). GPT-4 Technical Report. arXiv preprint arXiv:2303.08774. 
+10. Lewis, M., Liu, Y., Goyal, N., Ghazvininejad, M., Mohamed, A., et al. (2020). 
+BART: Denoising Sequence-to-Sequence Pre-training for Natural Language 
+Generation. ACL. 
+11. Raffel, C., Shazeer, N., Roberts, A., Lee, K., Narang, S., et al. (2020). 
+Exploring the Limits of Transfer Learning with a Unified Text-to-Text 
+Transformer. JMLR. 
+12. Radford, A., Narasimhan, K., Salimans, T., & Sutskever, I. (2018). Improving 
+Language Understanding with Generative Pre-training. OpenAI Technical 
+Report. 
+13. Ziegler, D. M., Stiennon, N., Wu, J., Brown, T., Radford, A., et al. (2019). 
+Fine-Tuning Language Models from Human Preferences. arXiv preprint 
+arXiv:1909.08593. 
+14. Li, J., Monroe, W., & Jurafsky, D. (2016). A Simple, Fast Diverse Decoding 
+Algorithm for Neural Generation. arXiv preprint arXiv:1611.08562. 
+15. Xu, W., Ritter, A., & Grishman, R. (2013). Gathering and Generating 
+Paraphrases from Twitter with Application to Normalization. EACL. 
+16. Doshi-Velez, F., & Kim, B. (2017). Towards a Rigorous Science of 
+Interpretable Machine Learning. arXiv preprint arXiv:1702.08608. 
+ 

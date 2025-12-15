@@ -73,23 +73,60 @@ def train_with_embeddings(texts: List[str], labels: List[str], embed_model_name:
     # uses lazy weight initialization (device_map / low_cpu_mem_usage).
     try:
         embedder = SentenceTransformer(embed_model_name, device="cpu")
+        use_sentence_transformer = True
     except Exception as e:
         # Common failing symptom: "Cannot copy out of meta tensor; no data!"
-        # Provide a clear, actionable error message that explains likely fixes.
+        # Attempt a deterministic fallback that uses Hugging Face transformers
+        # directly (AutoTokenizer + AutoModel) loaded onto CPU with
+        # low_cpu_mem_usage=False and device_map=None to avoid meta device lazy init.
         msg = str(e)
+        use_sentence_transformer = False
         if "meta tensor" in msg or "to_empty" in msg:
-            raise RuntimeError(
-                "Failed to load embedding model due to 'meta' tensor initialization. "
-                "This often happens when transformers initializes weights on the 'meta' device (e.g. with device_map or low_cpu_mem_usage). "
-                "Try one of the following fixes:\n"
-                "  1) Upgrade packages: `pip install --upgrade sentence-transformers transformers accelerate`\n"
-                "  2) Install without accelerate/bitsandbytes if you don't need them, or set device explicitly to CPU/GPU by passing `device='cpu'` (already tried).\n"
-                "  3) If you're using a very large model, consider loading with transformers directly using `low_cpu_mem_usage=False` and `device_map=None`.\n"
-                "If none of these help, please paste the full traceback so I can suggest targeted changes. Original error: " + msg
-            )
-        # If it's some other error, just re-raise it for visibility
-        raise
-    X = embedder.encode(texts, show_progress_bar=False, convert_to_numpy=True)
+            try:
+                from transformers import AutoTokenizer, AutoModel
+                import torch
+
+                tokenizer = AutoTokenizer.from_pretrained(embed_model_name)
+                # Force non-lazy full weights load onto CPU
+                model = AutoModel.from_pretrained(embed_model_name, low_cpu_mem_usage=False, device_map=None)
+                model.to("cpu")
+
+                def _embeddings_from_transformers(texts_list):
+                    # Tokenize and compute mean-pooled embeddings like SentenceTransformers
+                    enc = tokenizer(texts_list, padding=True, truncation=True, return_tensors="pt")
+                    with torch.no_grad():
+                        out = model(**{k: v.to("cpu") for k, v in enc.items()})
+                    # Prefer `last_hidden_state`; for some models pooled output may exist
+                    hidden = out.last_hidden_state
+                    mask = enc.get("attention_mask")
+                    if mask is None:
+                        # simple mean pool over sequence dim
+                        emb = hidden.mean(dim=1)
+                    else:
+                        mask = mask.unsqueeze(-1)
+                        summed = (hidden * mask).sum(dim=1)
+                        counts = mask.sum(dim=1).clamp(min=1)
+                        emb = summed / counts
+                    return emb.cpu().numpy()
+
+                embedder = _embeddings_from_transformers
+                use_sentence_transformer = False
+            except Exception as e2:
+                # If fallback also fails, raise an informative error describing both failures
+                raise RuntimeError(
+                    "Failed to load embedding model with SentenceTransformer and fallback to transformers failed as well. "
+                    f"Original error: {msg}. Fallback error: {e2}. Try upgrading: `pip install --upgrade sentence-transformers transformers accelerate torch`"
+                )
+        else:
+            # Not obviously a meta-device error; re-raise to surface the original traceback
+            raise
+    # embedder is either a SentenceTransformer instance (with `.encode`) or a
+    # fallback callable that returns numpy arrays for a list of texts.
+    if hasattr(embedder, "encode"):
+        X = embedder.encode(texts, show_progress_bar=False, convert_to_numpy=True)
+    else:
+        # our fallback callable
+        X = embedder(texts)
     scaler = StandardScaler()
     Xs = scaler.fit_transform(X)
     clf = LogisticRegression(max_iter=2000, solver="liblinear")

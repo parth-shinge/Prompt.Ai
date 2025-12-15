@@ -528,6 +528,147 @@ def admin_panel():
         if samples_info and not _cv_feasible(samples_info, k=5):
             st.info("tfidf cross-validation not feasible on this dataset (too few samples per class).")
 
+        # Embedding model quick test button
+        if st.button("Test embedding model"):
+            with st.spinner("Testing embedding model load..."):
+                try:
+                    from ranker import _load_embedder
+                    emb = _load_embedder(selected_emb)
+                    # if it's a SentenceTransformer instance, try a short encode
+                    if hasattr(emb, "encode"):
+                        _ = emb.encode(["test"], convert_to_numpy=True, show_progress_bar=False)
+                    else:
+                        _ = emb(["test"])
+                    st.success(f"Embedding model '{selected_emb}' loaded successfully.")
+                except Exception as e:
+                    st.error("Embedding model test failed: " + str(e))
+
+        st.markdown("---")
+        st.subheader("Bulk labeling helper")
+        st.markdown("Quickly create many hybrid labeling tasks from a list of topics so you can label them in-app or have users label them.")
+        topics_text = st.text_area("Topics (one per line)", key="bulk_topics")
+        variations = st.number_input("Variations per topic", min_value=1, max_value=50, value=5, key="bulk_vars")
+        bulk_tool = st.selectbox("Tool for prompts", ["Gamma", "Canva"], key="bulk_tool")
+        bulk_style = st.text_input("Style for bulk prompts (e.g. modern)", key="bulk_style")
+        bulk_platform = st.text_input("Platform (optional)", key="bulk_platform")
+        bulk_colors = st.text_input("Color palette (optional)", key="bulk_colors")
+        bulk_mood = st.text_input("Mood (optional)", key="bulk_mood")
+
+        if st.button("Create hybrid labeling tasks"):
+            lines = [l.strip() for l in (topics_text or "").splitlines() if l.strip()]
+            if not lines:
+                st.error("Enter at least one topic (one per line).")
+            else:
+                created = 0
+                import json, datetime, os
+                os.makedirs("artifacts", exist_ok=True)
+                pairs_path = os.path.join("artifacts", "hybrid_pairs.jsonl")
+                for topic in lines:
+                    for i in range(int(variations)):
+                        # create minor variation by appending index
+                        t = f"{topic} ({i+1})" if int(variations) > 1 else topic
+                        offline_text = generate_template_prompt(bulk_tool, "presentation", t, bulk_style or "modern", bulk_platform or None, bulk_colors or None, bulk_mood or None)
+                        gemini_text = generate_gemini_prompt(bulk_tool, "presentation", t, bulk_style or "modern", bulk_platform or None, bulk_colors or None, bulk_mood or None)
+                        # Save prompts to DB
+                        offline_obj = save_prompt(bulk_tool, "presentation", t, bulk_style or "modern", offline_text, model_used="offline", user_id=None, platform_name=bulk_platform or None, color_palette=bulk_colors or None, mood=bulk_mood or None, used_hybrid=True)
+                        gemini_obj = save_prompt(bulk_tool, "presentation", t, bulk_style or "modern", gemini_text, model_used="gemini", user_id=None, platform_name=bulk_platform or None, color_palette=bulk_colors or None, mood=bulk_mood or None, used_hybrid=True)
+                        # record pair in artifacts file
+                        entry = {"offline_id": offline_obj.id, "gemini_id": gemini_obj.id, "created": datetime.datetime.utcnow().isoformat() + "Z", "labeled": False}
+                        with open(pairs_path, "a", encoding="utf-8") as fh:
+                            fh.write(json.dumps(entry) + "\n")
+                        created += 1
+                st.success(f"Created {created} hybrid labeling tasks and saved pairs to {pairs_path}.")
+
+        st.markdown("---")
+        st.subheader("Pending hybrid labeling tasks")
+        st.markdown("Use this interface to label tasks created above. Select a user to attribute the choices to (required to build training dataset).")
+        # fetch users for attribution
+        with SessionLocal() as session:
+            users = session.execute(select(User)).scalars().all()
+            user_options = [(u.id, u.username) for u in users]
+        if user_options:
+            selected_user = st.selectbox("Record choices as user:", options=[(uid, name) for uid, name in user_options], format_func=lambda t: t[1], key="label_user_select")
+            selected_user_id = selected_user[0]
+        else:
+            selected_user_id = None
+            st.warning("No users exist to attribute choices to. Create users first or attribute choices to an existing user.")
+
+        # read pending pairs
+        import json, os
+        pairs_path = os.path.join("artifacts", "hybrid_pairs.jsonl")
+        pending = []
+        if os.path.exists(pairs_path):
+            for ln in open(pairs_path, "r", encoding="utf-8").read().splitlines():
+                try:
+                    obj = json.loads(ln)
+                    if not obj.get("labeled"):
+                        pending.append(obj)
+                except Exception:
+                    continue
+
+        if not pending:
+            st.info("No pending hybrid pairs. Create some with the Bulk labeling helper above.")
+        else:
+            # show first 10 pending
+            for idx, p in enumerate(pending[:10]):
+                off_id = p.get("offline_id")
+                gem_id = p.get("gemini_id")
+                with SessionLocal() as session:
+                    off = session.get(Prompt, off_id)
+                    gem = session.get(Prompt, gem_id)
+                if not off or not gem:
+                    st.warning(f"Pair {idx+1}: prompts not found (maybe deleted)")
+                    continue
+                st.markdown(f"**Pair #{idx+1}** — Topic: {off.topic}")
+                st.markdown("**Offline variant:**")
+                st.code(off.generated_text, language="markdown")
+                st.markdown("**Gemini variant:**")
+                st.code(gem.generated_text, language="markdown")
+                col_l, col_r = st.columns([1,1])
+                if col_l.button("Choose Offline", key=f"choose_off_{idx}"):
+                    if selected_user_id is None:
+                        st.error("Select a user to attribute the choice to before labeling.")
+                    else:
+                        ok, res = record_choice(selected_user_id, off_id, gem_id, off_id, "offline")
+                        if ok:
+                            # mark labeled
+                            _mark_pair_labeled(pairs_path, off_id, gem_id, off_id, "offline", selected_user_id)
+                            st.success("Choice recorded (offline).")
+                        else:
+                            st.error("Could not record choice: " + (res or "unknown"))
+                if col_r.button("Choose Gemini", key=f"choose_gem_{idx}"):
+                    if selected_user_id is None:
+                        st.error("Select a user to attribute the choice to before labeling.")
+                    else:
+                        ok, res = record_choice(selected_user_id, off_id, gem_id, gem_id, "gemini")
+                        if ok:
+                            _mark_pair_labeled(pairs_path, off_id, gem_id, gem_id, "gemini", selected_user_id)
+                            st.success("Choice recorded (gemini).")
+                        else:
+                            st.error("Could not record choice: " + (res or "unknown"))
+
+def _mark_pair_labeled(pairs_path: str, offline_id: int, gemini_id: int, chosen_id: int, chosen_model: str, user_id: int):
+    # read all, update matching pair
+    import json
+    lines = []
+    try:
+        with open(pairs_path, "r", encoding="utf-8") as fh:
+            for ln in fh.read().splitlines():
+                try:
+                    obj = json.loads(ln)
+                    if obj.get("offline_id") == offline_id and obj.get("gemini_id") == gemini_id and not obj.get("labeled"):
+                        obj["labeled"] = True
+                        obj["chosen_id"] = chosen_id
+                        obj["chosen_model"] = chosen_model
+                        obj["labeled_by"] = int(user_id)
+                    lines.append(json.dumps(obj))
+                except Exception:
+                    lines.append(ln)
+        with open(pairs_path, "w", encoding="utf-8") as fh:
+            fh.write("\n".join(lines) + ("\n" if lines else ""))
+    except Exception:
+        pass
+
         if st.button("Train embedding-based ranker (if available)"):
             # It will call ranker.train_with_embeddings using dataset from get_choice_dataset
             dataset = get_choice_dataset()

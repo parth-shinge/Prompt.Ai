@@ -86,10 +86,40 @@ def train_with_embeddings(texts: List[str], labels: List[str], embed_model_name:
                 from transformers import AutoTokenizer, AutoModel
                 import torch
 
-                tokenizer = AutoTokenizer.from_pretrained(embed_model_name)
-                # Force non-lazy full weights load onto CPU
-                model = AutoModel.from_pretrained(embed_model_name, low_cpu_mem_usage=False, device_map=None)
-                model.to("cpu")
+                # Try a few candidate model identifiers. Some models (like
+                # those published under the sentence-transformers org) are
+                # referenced in SentenceTransformer by short name (e.g.
+                # 'all-MiniLM-L6-v2') but require the full HF id
+                # 'sentence-transformers/all-MiniLM-L6-v2' when using
+                # AutoModel/AutoTokenizer.
+                candidates = [embed_model_name, f"sentence-transformers/{embed_model_name}"]
+                hf_token = None
+                # Allow optional token via env var for private models
+                try:
+                    import os
+                    hf_token = os.environ.get("HUGGINGFACE_TOKEN")
+                except Exception:
+                    hf_token = None
+
+                last_exc = None
+                tokenizer = None
+                model = None
+                for candidate in candidates:
+                    try:
+                        tokenizer = AutoTokenizer.from_pretrained(candidate, use_auth_token=hf_token)
+                        # Force non-lazy full weights load onto CPU
+                        model = AutoModel.from_pretrained(candidate, low_cpu_mem_usage=False, device_map=None, use_auth_token=hf_token)
+                        model.to("cpu")
+                        chosen_model_id = candidate
+                        break
+                    except Exception as e2:
+                        last_exc = e2
+                        tokenizer = None
+                        model = None
+
+                if model is None or tokenizer is None:
+                    # no candidate worked
+                    raise last_exc
 
                 def _embeddings_from_transformers(texts_list):
                     # Tokenize and compute mean-pooled embeddings like SentenceTransformers

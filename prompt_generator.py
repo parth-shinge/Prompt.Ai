@@ -481,17 +481,31 @@ def admin_panel():
                 try:
                     results = compare_models(list(texts), list(labels), embed_model_name=selected_emb, cv=5)
                     st.json(results)
-                    # Simple bar viz of mean accuracies
+
+                    # Simple bar viz of mean accuracies (skip models that errored)
                     labels_x = []
                     means = []
                     for k, v in results.items():
+                        if isinstance(v, dict) and v.get("error"):
+                            st.warning(f"{k} comparison unavailable: {v.get('error')}")
+                            continue
+                        mean_val = v.get("mean") if isinstance(v, dict) else None
+                        try:
+                            mean_num = float(mean_val) if mean_val is not None and not (isinstance(mean_val, float) and math.isnan(mean_val)) else None
+                        except Exception:
+                            mean_num = None
+                        if mean_num is None:
+                            st.info(f"{k} cross-validation not feasible on this dataset (too few samples per class).")
+                            continue
                         labels_x.append(k)
-                        means.append(float(v.get("mean", 0.0)))
-                    fig, ax = plt.subplots(figsize=(4,3))
-                    ax.bar(labels_x, means)
-                    ax.set_ylim(0, 1)
-                    ax.set_ylabel("Mean CV Accuracy")
-                    st.pyplot(fig)
+                        means.append(mean_num)
+
+                    if labels_x and means:
+                        fig, ax = plt.subplots(figsize=(4,3))
+                        ax.bar(labels_x, means)
+                        ax.set_ylim(0, 1)
+                        ax.set_ylabel("Mean CV Accuracy")
+                        st.pyplot(fig)
                 except Exception as e:
                     st.error("Comparison failed: " + str(e))
         return

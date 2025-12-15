@@ -68,95 +68,8 @@ def train_with_embeddings(texts: List[str], labels: List[str], embed_model_name:
     safe_cv = _compute_safe_cv(labels, cv)
     # Cache models under local folder if HF cache not desired; by default SentenceTransformer caches to ~/.cache
     # Users can set SENTENCE_TRANSFORMERS_HOME to a local directory to persist models between runs.
-    # Try to load the SentenceTransformer explicitly on CPU first to avoid
-    # 'meta' tensor initialization issues which can occur when transformers
-    # uses lazy weight initialization (device_map / low_cpu_mem_usage).
-    try:
-        embedder = SentenceTransformer(embed_model_name, device="cpu")
-        use_sentence_transformer = True
-    except Exception as e:
-        # Common failing symptom: "Cannot copy out of meta tensor; no data!"
-        # Attempt a deterministic fallback that uses Hugging Face transformers
-        # directly (AutoTokenizer + AutoModel) loaded onto CPU with
-        # low_cpu_mem_usage=False and device_map=None to avoid meta device lazy init.
-        msg = str(e)
-        use_sentence_transformer = False
-        if "meta tensor" in msg or "to_empty" in msg:
-            try:
-                from transformers import AutoTokenizer, AutoModel
-                import torch
-
-                # Try a few candidate model identifiers. Some models (like
-                # those published under the sentence-transformers org) are
-                # referenced in SentenceTransformer by short name (e.g.
-                # 'all-MiniLM-L6-v2') but require the full HF id
-                # 'sentence-transformers/all-MiniLM-L6-v2' when using
-                # AutoModel/AutoTokenizer.
-                candidates = [embed_model_name, f"sentence-transformers/{embed_model_name}"]
-                hf_token = None
-                # Allow optional token via env var for private models
-                try:
-                    import os
-                    hf_token = os.environ.get("HUGGINGFACE_TOKEN")
-                except Exception:
-                    hf_token = None
-
-                last_exc = None
-                tokenizer = None
-                model = None
-                for candidate in candidates:
-                    try:
-                        tokenizer = AutoTokenizer.from_pretrained(candidate, use_auth_token=hf_token)
-                        # Force non-lazy full weights load onto CPU
-                        model = AutoModel.from_pretrained(candidate, low_cpu_mem_usage=False, device_map=None, use_auth_token=hf_token)
-                        model.to("cpu")
-                        chosen_model_id = candidate
-                        break
-                    except Exception as e2:
-                        last_exc = e2
-                        tokenizer = None
-                        model = None
-
-                if model is None or tokenizer is None:
-                    # no candidate worked
-                    raise last_exc
-
-                def _embeddings_from_transformers(texts_list):
-                    # Tokenize and compute mean-pooled embeddings like SentenceTransformers
-                    enc = tokenizer(texts_list, padding=True, truncation=True, return_tensors="pt")
-                    with torch.no_grad():
-                        out = model(**{k: v.to("cpu") for k, v in enc.items()})
-                    # Prefer `last_hidden_state`; for some models pooled output may exist
-                    hidden = out.last_hidden_state
-                    mask = enc.get("attention_mask")
-                    if mask is None:
-                        # simple mean pool over sequence dim
-                        emb = hidden.mean(dim=1)
-                    else:
-                        mask = mask.unsqueeze(-1)
-                        summed = (hidden * mask).sum(dim=1)
-                        counts = mask.sum(dim=1).clamp(min=1)
-                        emb = summed / counts
-                    return emb.cpu().numpy()
-
-                embedder = _embeddings_from_transformers
-                use_sentence_transformer = False
-            except Exception as e2:
-                # If fallback also fails, raise an informative error describing both failures
-                raise RuntimeError(
-                    "Failed to load embedding model with SentenceTransformer and fallback to transformers failed as well. "
-                    f"Original error: {msg}. Fallback error: {e2}. Try upgrading: `pip install --upgrade sentence-transformers transformers accelerate torch`"
-                )
-        else:
-            # Not obviously a meta-device error; re-raise to surface the original traceback
-            raise
-    # embedder is either a SentenceTransformer instance (with `.encode`) or a
-    # fallback callable that returns numpy arrays for a list of texts.
-    if hasattr(embedder, "encode"):
-        X = embedder.encode(texts, show_progress_bar=False, convert_to_numpy=True)
-    else:
-        # our fallback callable
-        X = embedder(texts)
+    embedder = SentenceTransformer(embed_model_name)
+    X = embedder.encode(texts, show_progress_bar=False, convert_to_numpy=True)
     scaler = StandardScaler()
     Xs = scaler.fit_transform(X)
     clf = LogisticRegression(max_iter=2000, solver="liblinear")
@@ -179,18 +92,38 @@ def train_with_embeddings(texts: List[str], labels: List[str], embed_model_name:
 
 
 def compare_models(texts: List[str], labels: List[str], embed_model_name: str = "all-MiniLM-L6-v2", cv: int = 5):
+    """Run quick comparisons between TF-IDF and embedding-based rankers.
+
+    Returns a dict with keys 'tfidf' and (optionally) 'embedding'. Each value is
+    a report dict containing 'cv_scores', 'mean', and other metadata. If
+    embedding training fails, the 'embedding' key will contain an 'error'
+    message instead of a report dict.
+    """
     results = {}
     # store temporary models in a dedicated artifacts folder to keep repo clean
     tmp_dir = os.path.join("artifacts")
     os.makedirs(tmp_dir, exist_ok=True)
     tfidf_tmp_path = os.path.join(tmp_dir, "tmp_tfidf.pkl")
     emb_tmp_path = os.path.join(tmp_dir, "tmp_emb.pkl")
+    # Validate basic dataset requirements
+    if len(set(labels)) < 2 or len(labels) < 2:
+        raise ValueError("Need at least 2 classes and 2 samples to compare models.")
 
     tfidf_acc, tfidf_rep = train_basic(texts, labels, save_path=tfidf_tmp_path, cv=cv)
     results["tfidf"] = tfidf_rep
+
+    # Try embeddings only if sentence-transformers is available. If the
+    # embedding training fails for any reason, capture the error and continue
+    # so the admin UI can show TF-IDF results and present the embedding failure.
     if _HAS_ST:
-        emb_acc, emb_rep = train_with_embeddings(texts, labels, embed_model_name, save_path=emb_tmp_path, cv=cv)
-        results["embedding"] = emb_rep
+        try:
+            emb_acc, emb_rep = train_with_embeddings(texts, labels, embed_model_name, save_path=emb_tmp_path, cv=cv)
+            results["embedding"] = emb_rep
+        except Exception as e:
+            results["embedding"] = {"error": str(e)}
+    else:
+        results["embedding"] = {"error": "sentence-transformers not installed"}
+
     return results
 
 

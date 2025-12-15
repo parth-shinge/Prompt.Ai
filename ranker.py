@@ -68,7 +68,27 @@ def train_with_embeddings(texts: List[str], labels: List[str], embed_model_name:
     safe_cv = _compute_safe_cv(labels, cv)
     # Cache models under local folder if HF cache not desired; by default SentenceTransformer caches to ~/.cache
     # Users can set SENTENCE_TRANSFORMERS_HOME to a local directory to persist models between runs.
-    embedder = SentenceTransformer(embed_model_name)
+    # Try to load the SentenceTransformer explicitly on CPU first to avoid
+    # 'meta' tensor initialization issues which can occur when transformers
+    # uses lazy weight initialization (device_map / low_cpu_mem_usage).
+    try:
+        embedder = SentenceTransformer(embed_model_name, device="cpu")
+    except Exception as e:
+        # Common failing symptom: "Cannot copy out of meta tensor; no data!"
+        # Provide a clear, actionable error message that explains likely fixes.
+        msg = str(e)
+        if "meta tensor" in msg or "to_empty" in msg:
+            raise RuntimeError(
+                "Failed to load embedding model due to 'meta' tensor initialization. "
+                "This often happens when transformers initializes weights on the 'meta' device (e.g. with device_map or low_cpu_mem_usage). "
+                "Try one of the following fixes:\n"
+                "  1) Upgrade packages: `pip install --upgrade sentence-transformers transformers accelerate`\n"
+                "  2) Install without accelerate/bitsandbytes if you don't need them, or set device explicitly to CPU/GPU by passing `device='cpu'` (already tried).\n"
+                "  3) If you're using a very large model, consider loading with transformers directly using `low_cpu_mem_usage=False` and `device_map=None`.\n"
+                "If none of these help, please paste the full traceback so I can suggest targeted changes. Original error: " + msg
+            )
+        # If it's some other error, just re-raise it for visibility
+        raise
     X = embedder.encode(texts, show_progress_bar=False, convert_to_numpy=True)
     scaler = StandardScaler()
     Xs = scaler.fit_transform(X)

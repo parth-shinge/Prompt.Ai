@@ -5,6 +5,8 @@ import hashlib
 import hmac
 import random
 import matplotlib.pyplot as plt
+import time
+import math
 from sqlalchemy import select
 
 import pandas as pd
@@ -32,6 +34,25 @@ from ranker import train_basic, train_with_embeddings, compare_models, load_rank
 
 # ==== CONFIG/SECRETS ====
 GEMINI_API_KEY = st.secrets.get("GEMINI_API_KEY", None)
+# Allow specifying which Gemini model to use via secrets (e.g. "gemini-1.5-flash" or "gemini-2.0-flash")
+# Default to the commonly used 1.5 flash if not set to avoid unexpected 2.0 calls.
+GEMINI_MODEL = st.secrets.get("GEMINI_MODEL", "gemini-2.5-flash")
+# Rate limit (seconds) to wait before calling the API. Can be set in secrets as a number.
+try:
+    _rl = st.secrets.get("GEMINI_RATE_LIMIT_SECONDS", None)
+    GEMINI_RATE_LIMIT_SECONDS = float(_rl) if _rl is not None else 1.0
+except Exception:
+    GEMINI_RATE_LIMIT_SECONDS = 1.0
+try:
+    _gt = st.secrets.get("GEMINI_REQUEST_TIMEOUT", None)
+    GEMINI_REQUEST_TIMEOUT = float(_gt) if _gt is not None else 30.0
+except Exception:
+    GEMINI_REQUEST_TIMEOUT = 30.0
+try:
+    _gr = st.secrets.get("GEMINI_MAX_RETRIES", None)
+    GEMINI_MAX_RETRIES = int(_gr) if _gr is not None else 2
+except Exception:
+    GEMINI_MAX_RETRIES = 2
 ADMIN_USERNAME = st.secrets.get("ADMIN_USERNAME", None)
 ADMIN_PW_SALT = st.secrets.get("ADMIN_PW_SALT", None)
 ADMIN_PW_HASH = st.secrets.get("ADMIN_PW_HASH", None)
@@ -117,30 +138,114 @@ def generate_gemini_prompt(tool, content_type, topic, style, platform=None, colo
     user_parts.append(f"Write the prompt as if the user will paste it into {tool}.")
     user_msg = " ".join([p for p in user_parts if p])
 
-    url = (
-        "https://generativelanguage.googleapis.com/v1beta/"
-        "models/gemini-2.0-flash:generateContent"
-    )
+    # Build request URL based on configured GEMINI_MODEL
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
     headers = {"Content-Type": "application/json", "X-goog-api-key": GEMINI_API_KEY}
     payload = {"contents": [{"parts": [{"text": user_msg}]}]}
 
-    response = requests.post(url, headers=headers, json=payload)
+    # Respect configured rate limit and retry on transient network errors/timeouts
+    attempt = 0
+    last_exception = None
+    while attempt < GEMINI_MAX_RETRIES:
+        attempt += 1
+        if attempt > 1:
+            # backoff before retry
+            wait = GEMINI_RATE_LIMIT_SECONDS + (2 ** (attempt - 1))
+            time.sleep(min(wait, 60))
+
+        time.sleep(GEMINI_RATE_LIMIT_SECONDS)
+        try:
+            resp = requests.post(url, headers=headers, json=payload, timeout=GEMINI_REQUEST_TIMEOUT)
+        except requests.exceptions.Timeout as e:
+            last_exception = e
+            # try again unless we've exhausted retries
+            if attempt >= GEMINI_MAX_RETRIES:
+                fallback = generate_template_prompt(tool, content_type, topic, style, platform, color_palette, mood)
+                return f"⚠️ Gemini request timed out after {GEMINI_REQUEST_TIMEOUT}s (attempts={attempt}); showing offline template instead:\n\n" + fallback
+            continue
+        except requests.exceptions.RequestException as e:
+            last_exception = e
+            if attempt >= GEMINI_MAX_RETRIES:
+                fallback = generate_template_prompt(tool, content_type, topic, style, platform, color_palette, mood)
+                return f"⚠️ Gemini request failed ({e}); showing offline template instead:\n\n" + fallback
+            continue
+
+        # got a response; parse it
+        try:
+            data = resp.json()
+        except Exception:
+            data = resp.text
+
+        # transient server errors — retry
+        if resp.status_code in (502, 503, 504):
+            last_exception = Exception(f"HTTP {resp.status_code}")
+            if attempt >= GEMINI_MAX_RETRIES:
+                fallback = generate_template_prompt(tool, content_type, topic, style, platform, color_palette, mood)
+                return f"⚠️ Gemini returned HTTP {resp.status_code}; showing offline template instead:\n\n" + fallback
+            continue
+
+        if resp.status_code == 429 or (isinstance(data, dict) and data.get("error", {}).get("code") == 429):
+            fallback = generate_template_prompt(tool, content_type, topic, style, platform, color_palette, mood)
+            detail = data.get("error", {}).get("message") if isinstance(data, dict) else None
+            if detail:
+                return f"⚠️ Gemini free-tier quota exceeded (HTTP 429): {detail}; showing offline template instead:\n\n" + fallback
+            return "⚠️ Gemini free-tier quota exceeded; showing offline template instead:\n\n" + fallback
+
+        if not resp.ok:
+            # non-retriable error — return it
+            return f"Gemini API error: HTTP {resp.status_code} - {data}"
+
+        try:
+            return data["candidates"][0]["content"]["parts"][0]["text"]
+        except Exception:
+            return f"Unexpected response format: {data}"
+
+
+def test_gemini_key_once(timeout_override: float | None = None):
+    """Perform a single, lightweight GET to the configured model endpoint to verify the key and model.
+
+    Returns a tuple: (ok: bool, message: str, status_code: int|None)
+    """
+    if not GEMINI_API_KEY:
+        return False, "Gemini API key not configured.", None
+
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}"
+    headers = {"X-goog-api-key": GEMINI_API_KEY}
+    timeout = float(timeout_override) if timeout_override is not None else min(GEMINI_REQUEST_TIMEOUT, 10.0)
+
     try:
-        data = response.json()
-    except Exception:
-        return "Gemini API error: invalid JSON response."
+        resp = requests.get(url, headers=headers, timeout=timeout)
+    except requests.exceptions.Timeout:
+        return False, f"Request timed out after {timeout}s.", None
+    except requests.exceptions.RequestException as e:
+        return False, f"Request failed: {e}", None
 
-    if response.status_code == 429 or (isinstance(data, dict) and data.get("error", {}).get("code") == 429):
-        fallback = generate_template_prompt(tool, content_type, topic, style, platform, color_palette, mood)
-        return "⚠️ Gemini free-tier quota exceeded; showing offline template instead:\n\n" + fallback
-
-    if not response.ok:
-        return f"Gemini API error: {data}"
-
+    # Try to parse body safely
     try:
-        return data["candidates"][0]["content"]["parts"][0]["text"]
+        body = resp.json()
     except Exception:
-        return f"Unexpected response format: {data}"
+        body = resp.text
+
+    if resp.status_code == 200:
+        # Model reachable and readable
+        return True, f"Success: model '{GEMINI_MODEL}' is reachable (HTTP 200).", 200
+    if resp.status_code == 404:
+        # Model not found
+        return False, f"Model '{GEMINI_MODEL}' not found (HTTP 404). Consider using a supported model (e.g., 'gemini-2.5-flash').", 404
+    if resp.status_code == 401 or resp.status_code == 403:
+        return False, f"Authentication/permission error (HTTP {resp.status_code}). Check the API key and project permissions.", resp.status_code
+    if resp.status_code == 429:
+        # Quota exceeded
+        detail = None
+        if isinstance(body, dict):
+            detail = body.get("error", {}).get("message")
+        msg = f"Quota exceeded (HTTP 429). {detail or ''}".strip()
+        return False, msg, 429
+
+    # Fallback: return status and a short body preview
+    summary = body if isinstance(body, str) else str(body)[:200]
+    return False, f"Unexpected HTTP {resp.status_code}: {summary}", resp.status_code
+
 
 
 # DB operations for prompts (save/delete)
@@ -290,6 +395,31 @@ def show_dashboard():
         st.dataframe(df)
     else:
         st.info("No user activity yet.")
+
+    # Gemini API health test (admin-only)
+    st.markdown("---")
+    st.subheader("🔎 Gemini API Health Check")
+    st.caption(f"Configured model: **{GEMINI_MODEL}** — rate-limit wait: **{GEMINI_RATE_LIMIT_SECONDS}s**")
+    # Model can be configured via `GEMINI_MODEL` secret (default: gemini-2.5-flash)
+
+    if GEMINI_API_KEY:
+        try:
+            masked = f"***{GEMINI_API_KEY[-6:]}"
+        except Exception:
+            masked = "(configured)"
+        st.info(f"Gemini key configured (last 6 chars: {masked}). Click 'Test' to check status.")
+        st.caption("Performs a single lightweight model GET to verify key/model. No model listing will be displayed.")
+        if st.button("Test Gemini key"):
+            with st.spinner("Testing Gemini key..."):
+                ok, msg, status = test_gemini_key_once()
+            if ok:
+                st.success(msg)
+            else:
+                st.error(msg)
+    else:
+        st.info("Gemini API key not configured in Streamlit secrets.")
+
+    # Keep Dashboard minimal per request — no model listing/diagnostics UI
 
 
 def admin_panel():
